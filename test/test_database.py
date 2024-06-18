@@ -37,6 +37,7 @@ def test_create_table_no_ids(db):
     if db.is_mysql or db.is_sqlite:
         return
     table = db.create_table("foo_no_id", primary_id=False)
+    assert table.exists()
     assert table.table.name == "foo_no_id"
     assert len(table.table.columns) == 0, table.table.columns
 
@@ -95,9 +96,9 @@ def test_create_table_shorthand1(db):
 def test_create_table_shorthand2(db):
     pid = "string_id"
     table = db.get_table("foo6", primary_id=pid, primary_type=db.types.string(255))
+    assert table.exists
     assert len(table.table.columns) == 1, table.table.columns
     assert pid in table.table.c, table.table.c
-
     table.insert({"string_id": "foobar"})
     assert table.find_one(string_id="foobar")["string_id"] == "foobar"
 
@@ -114,8 +115,8 @@ def test_with(db, table):
                 }
             )
             raise ValueError()
-    db.rollback()
     assert len(table) == init_length
+    assert len(table) == len(TEST_DATA)
 
 
 def test_invalid_values(db, table):

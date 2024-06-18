@@ -1,7 +1,7 @@
-import pytest
-from datetime import datetime
+# -*- encoding: utf-8 -*-
+from __future__ import unicode_literals
 
-import dataset
+from datetime import datetime
 
 
 TEST_CITY_1 = "B€rkeley"
@@ -15,20 +15,3 @@ TEST_DATA = [
     {"date": datetime(2011, 1, 2), "temperature": 8, "place": TEST_CITY_1},
     {"date": datetime(2011, 1, 3), "temperature": 5, "place": TEST_CITY_1},
 ]
-
-
-@pytest.fixture(scope="function")
-def db():
-    db = dataset.connect()
-    yield db
-    db.close()
-
-
-@pytest.fixture(scope="function")
-def table(db):
-    tbl = db["weather"]
-    tbl.drop()
-    tbl.insert_many(TEST_DATA)
-    yield tbl
-    for table in db.tables:
-        db[table].drop()

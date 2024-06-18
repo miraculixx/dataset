@@ -54,6 +54,11 @@ class Table(object):
         """Check to see if the table currently exists in the database."""
         if self._table is not None:
             return True
+        else:
+            try:
+                _ = self.table
+            except DatasetException:
+                return False
         return self.name in self.db
 
     @property
@@ -116,9 +121,7 @@ class Table(object):
         Returns the inserted row's primary key.
         """
         row = self._sync_columns(row, ensure, types=types)
-        res = self.db.conn.execute(self.table.insert(), row)
-        # if not self.db.in_transaction:
-        #     self.db.conn.commit()
+        res = self.db.execute(self.table.insert(), row)
         if len(res.inserted_primary_key) > 0:
             return res.inserted_primary_key[0]
         return True
@@ -183,7 +186,7 @@ class Table(object):
             # Insert when chunk_size is fulfilled or this is the last row
             if len(chunk) == chunk_size or index == len(rows) - 1:
                 chunk = pad_chunk_columns(chunk, columns)
-                self.db.conn.execute(self.table.insert(), chunk)
+                self.db.execute(self.table.insert(), chunk)
                 chunk = []
 
     def update(self, row, keys, ensure=None, types=None, return_count=False):
@@ -209,7 +212,7 @@ class Table(object):
         if not len(row):
             return self.count(clause)
         stmt = self.table.update().where(clause).values(row)
-        rp = self.db.conn.execute(stmt)
+        rp = self.db.execute(stmt)
         if rp.supports_sane_rowcount():
             return rp.rowcount
         if return_count:
@@ -248,7 +251,7 @@ class Table(object):
                     .where(and_(True, *cl))
                     .values({col: bindparam(col, required=False) for col in columns})
                 )
-                self.db.conn.execute(stmt, chunk)
+                self.db.execute(stmt, chunk)
                 chunk = []
 
     def upsert(self, row, keys, ensure=None, types=None):
@@ -297,22 +300,21 @@ class Table(object):
             return False
         clause = self._args_to_clause(filters, clauses=clauses)
         stmt = self.table.delete().where(clause)
-        rp = self.db.conn.execute(stmt)
+        rp = self.db.execute(stmt)
         return rp.rowcount > 0
 
     def _reflect_table(self):
         """Load the tables definition from the database."""
-        with self.db.lock:
-            self._columns = None
-            try:
-                self._table = SQLATable(
-                    self.name,
-                    self.db.metadata,
-                    schema=self.db.schema,
-                    autoload_with=self.db.conn,
-                )
-            except NoSuchTableError:
-                self._table = None
+        self._columns = None
+        try:
+            self._table = SQLATable(
+                self.name,
+                self.db.metadata,
+                schema=self.db.schema,
+                autoload_with=self.db.conn,
+            )
+        except NoSuchTableError:
+            self._table = None
 
     def _threading_warn(self):
         if self.db.in_transaction and threading.active_count() > 1:
@@ -325,6 +327,8 @@ class Table(object):
 
     def _sync_table(self, columns):
         """Lazy load, create or adapt the table structure in the database."""
+        if self.db.in_transaction:
+            self.db.commit()
         if self._table is None:
             # Load an existing table from the database.
             self._reflect_table()
@@ -361,6 +365,8 @@ class Table(object):
                     if not self.has_column(column.name):
                         self.db.op.add_column(self.name, column, schema=self.db.schema)
                 self._reflect_table()
+        self.db.commit()
+        assert self.db.in_transaction is False
 
     def _sync_columns(self, row, ensure, types=None):
         """Create missing columns (or the table) prior to writes.
@@ -531,6 +537,7 @@ class Table(object):
                 self._table = None
                 self._columns = None
                 self.db._tables.pop(self.name, None)
+            self.db.commit()
 
     def has_index(self, columns):
         """Check if an index exists to cover the given ``columns``."""
@@ -638,7 +645,7 @@ class Table(object):
 
         conn = self.db.conn
         if _streamed:
-            conn = self.db._engine.connect().execution_options(stream_results=True)
+            conn = self.db.engine.connect().execution_options(stream_results=True)
 
         return ResultIter(conn.execute(query), row_type=self.db.row_type, step=_step)
 
@@ -674,7 +681,7 @@ class Table(object):
         args = self._args_to_clause(kwargs, clauses=_clauses)
         query = select(func.count()).where(args)
         query = query.select_from(self.table)
-        rp = self.db.conn.execute(query)
+        rp = self.db.execute(query)
         return rp.fetchone()[0]
 
     def __len__(self):

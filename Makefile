@@ -3,7 +3,16 @@ all: clean test dists
 
 .PHONY: test
 test:
-	pytest -v
+	pytest -v -x
+
+test-postgres:
+	-docker rm --force postgres
+	docker run --name postgres -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=dataset -d -p 5432:5432 postgres
+	export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/dataset"; sleep 5; pytest -v -k "test_dataset"
+	killall make
+
+dbs:
+	gh act
 
 dists:
 	python setup.py sdist

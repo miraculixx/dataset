@@ -44,6 +44,7 @@ class Database(object):
 
         self.lock = threading.RLock()
         self.local = threading.local()
+        self.local.savepoint = None
 
         if len(parsed_url.query):
             query = parse_qs(parsed_url.query)
@@ -53,10 +54,10 @@ class Database(object):
                     schema = schema_qs.pop()
 
         self.schema = schema
-        self._engine = create_engine(url, **engine_kwargs)
-        self.is_postgres = self._engine.dialect.name == "postgresql"
-        self.is_sqlite = self._engine.dialect.name == "sqlite"
-        self.is_mysql = "mysql" in self._engine.dialect.dbapi.__name__
+        self.engine = create_engine(url, **engine_kwargs)
+        self.is_postgres = self.engine.dialect.name == "postgresql"
+        self.is_sqlite = self.engine.dialect.name == "sqlite"
+        self.is_mysql = "mysql" in self.engine.dialect.dbapi.__name__
         if on_connect_statements is None:
             on_connect_statements = []
 
@@ -72,7 +73,7 @@ class Database(object):
             on_connect_statements.append("PRAGMA journal_mode=WAL")
 
         if len(on_connect_statements):
-            event.listen(self._engine, "connect", _run_on_connect)
+            event.listen(self.engine, "connect", _run_on_connect)
 
         self.types = Types(is_postgres=self.is_postgres)
         self.url = url
@@ -86,9 +87,12 @@ class Database(object):
         try:
             return self.local.conn
         except AttributeError:
-            self.local.conn = self._engine.connect()
-            self.local.conn.begin()
+            self.local.conn = self.engine.connect()
             return self.local.conn
+
+    def execute(self, *args, **kwargs):
+        with self:
+            return self.conn.execute(*args, **kwargs)
 
     @property
     def op(self):
@@ -125,25 +129,29 @@ class Database(object):
         No data will be written until the transaction has been committed.
         """
         if not self.in_transaction:
-            self.conn.begin()
+            return self.conn.begin()
+        else:
+            return self.conn.begin_nested()
 
     def commit(self):
         """Commit the current transaction.
 
         Make all statements executed since the transaction was begun permanent.
         """
-        self.conn.commit()
+        self.conn.commit() if not self.local.savepoint else self.local.savepoint.commit()
+        self.local.savepoint = None
 
     def rollback(self):
         """Roll back the current transaction.
 
         Discard all statements executed since the transaction was begun.
         """
-        self.conn.rollback()
+        self.conn.rollback() if not self.local.savepoint else self.local.savepoint.rollback()
+        self.local.savepoint = None
 
     def __enter__(self):
         """Start a transaction."""
-        self.begin()
+        self.local.savepoint = self.begin()
         return self
 
     def __exit__(self, error_type, error_value, traceback):
@@ -160,9 +168,9 @@ class Database(object):
     def close(self):
         """Close database connections. Makes this object unusable."""
         self.local = threading.local()
-        self._engine.dispose()
+        self.engine.dispose()
         self._tables = {}
-        self._engine = None
+        self.engine = None
 
     @property
     def tables(self):
@@ -223,7 +231,7 @@ class Database(object):
         table_name = normalize_table_name(table_name)
         with self.lock:
             if table_name not in self._tables:
-                self._tables[table_name] = Table(
+                table = self._tables[table_name] = Table(
                     self,
                     table_name,
                     primary_id=primary_id,
@@ -231,6 +239,7 @@ class Database(object):
                     primary_increment=primary_increment,
                     auto_create=True,
                 )
+                assert table.exists, f"table {table_name} could not be created"
             return self._tables.get(table_name)
 
     def load_table(self, table_name):
